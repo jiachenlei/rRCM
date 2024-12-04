@@ -225,7 +225,6 @@ def train(args):
 
         if train_state.step % args.train.log_interval == 0 and accelerator.is_main_process:
             print(uvit_utils.dct2str(dict(step=train_state.step,lr=train_state.optimizer.param_groups[0]['lr'], **metric_logger.get())), file=logfp, flush=True)
-            print(f"loss: {torch.rand(1)*0.2+0.7}")
             # logging.info(uvit_utils.dct2str(dict(step=train_state.step,lr=train_state.optimizer.param_groups[0]['lr'], **metric_logger.get())))
             metric_logger.clean()
 
