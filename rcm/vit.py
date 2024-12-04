@@ -344,16 +344,24 @@ class RCMViT(nn.Module):
         time_token = self.time_embed(timestep_embedding(timesteps, self.embed_dim))
         time_token = time_token.unsqueeze(dim=1)
         x = torch.cat((time_token, x), dim=1)
-        cls_tokens = self.cls_token.expand(B, -1, -1).to(self.dtype)
+        if self.multiclstoken:
+            cls_tokens = self.cls_token[indices[0]].expand(B, -1, -1).to(self.dtype)
+        else:
+            cls_tokens = self.cls_token.expand(B, -1, -1).to(self.dtype)
+
         x = torch.cat((cls_tokens, x), dim=1)
+
         x = x + self.pos_embed
         x = x.to(self.dtype)
+
+        if not dropout:
+            self.apply(self.freeze_dropout)
 
         for blk in self.blocks:
             x = blk(x)
 
         x = self.norm(x[:, 0])
-        residual = x # output from ViT
-        cls_token = self.projection_head(x) # output from projector
+        residual = x
+        cls_token = self.projection_head(x)
 
         return cls_token, residual
