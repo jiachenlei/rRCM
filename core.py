@@ -98,8 +98,8 @@ class Smooth(object):
                     mean = torch.tensor([.5, .5, .5])[None, :, None, None].to(x.device).expand(this_batch_size, -1, 1, 1)
                     std = torch.tensor([.5, .5, .5])[None, :, None, None].to(x.device).expand(this_batch_size, -1, 1, 1)
 
-                # Normalize with mean=std=0.5 after adding noise to image
-                # acts as the common normalization layer implementation in CR
+                # Notice by Authors: Normalize with mean=std=0.5 after adding noise to image.
+                # This is equal to the impelementation of normalization layer in other CR works[2,3,4,5]
                 input = ((batch + noise)-mean)/std
                 predictions = self.base_classifier(input).argmax(1)
                 counts += self._count_arr(predictions.cpu().numpy(), self.num_classes)

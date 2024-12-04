@@ -55,42 +55,31 @@ def timestep_embedding(timesteps, dim, max_period=10000):
 
 def reload_forward(self, layernorm, model_type="vit"):
 
-    if model_type == "vit":
-        def forward(x, timesteps, indices, **kwargs):
-            x = self.patch_embed(x)
-            B, L, D = x.shape
+    def forward(x, timesteps, indices, **kwargs):
+        x = self.patch_embed(x)
+        B, L, D = x.shape
 
-            time_token = self.time_embed(timestep_embedding(timesteps, self.embed_dim))
-            time_token = time_token.unsqueeze(dim=1)
-            x = torch.cat((time_token, x), dim=1)
+        time_token = self.time_embed(timestep_embedding(timesteps, self.embed_dim))
+        time_token = time_token.unsqueeze(dim=1)
+        x = torch.cat((time_token, x), dim=1)
 
-            cls_tokens = self.cls_token.expand(B, -1, -1).to(self.dtype)
-            x = torch.cat((cls_tokens, x), dim=1)
+        cls_tokens = self.cls_token.expand(B, -1, -1).to(self.dtype)
+        x = torch.cat((cls_tokens, x), dim=1)
 
-            x = x + self.pos_embed
-            x = x.to(self.dtype)
+        x = x + self.pos_embed
+        x = x.to(self.dtype)
 
-            for blk in self.blocks:
-                x = blk(x)
-            x = x[:, 0]
+        for blk in self.blocks:
+            x = blk(x)
+        x = x[:, 0]
 
-            if layernorm: # by default, layernorm == False
-                if self.final_norm == "multibn":
-                    x = self.bn_layers[indices[0]](x)
-                else:
-                    x = self.norm(x)
+        if layernorm: # by default, layernorm == False
+            if self.final_norm == "multibn":
+                x = self.bn_layers[indices[0]](x)
+            else:
+                x = self.norm(x)
 
-            return x
-    else:
-        def forward(x, timesteps):
-            emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
-            h = x
-            for module in self.input_blocks:
-                h = module(h, emb)
-
-            h = F.adaptive_avg_pool2d(h, 1).flatten(1)
-
-            return h
+        return x
 
     return forward
 
@@ -546,30 +535,6 @@ def evaluation(accelerator, ftmodel, test_data, num_test_sample, noise_aug=0, di
     return test_avg
 
 
-def interpolate_pos_embed(model, state_dict):
-    pos_embed_checkpoint = state_dict['pos_embed']
-
-    embedding_size = pos_embed_checkpoint.shape[-1]
-    num_patches = model.patch_embed.num_patches
-    num_extra_tokens = model.pos_embed.shape[-2] - num_patches
-    # height (== width) for the checkpoint position embedding
-    orig_size = int((pos_embed_checkpoint.shape[-2] - num_extra_tokens) ** 0.5)
-    # height (== width) for the new position embedding
-    new_size = int(num_patches ** 0.5)
-    # class_token and dist_token are kept unchanged
-    extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens]
-    # only the position tokens are interpolated
-    pos_tokens = pos_embed_checkpoint[:, num_extra_tokens:]
-    pos_tokens = pos_tokens.reshape(-1, orig_size, orig_size, embedding_size).permute(0, 3, 1, 2)
-    pos_tokens = torch.nn.functional.interpolate(
-        pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
-    pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)
-    new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
-    state_dict['pos_embed'] = new_pos_embed
-
-    return state_dict
-
-
 def train(args):
 
     dist_kwargs = accelerate.DistributedDataParallelKwargs(find_unused_parameters=True)
@@ -647,7 +612,6 @@ def train(args):
         logging.info(unexpected)
         assert len(missing) == 0
         logging.info(f"Use fine-tuned weights:{args.path}")
-
 
     if args.optimizer.scale_lr:
         args.optimizer.param.lr = args.optimizer.param.lr * args.dataset.batch_size / 256
@@ -776,7 +740,6 @@ def main(argv):
     # enabled when task == consistency
     config.lbd = FLAGS.lbd
     config.eta = FLAGS.eta
-
 
     config.save_ckpt = FLAGS.save_ckpt
     train(config)
