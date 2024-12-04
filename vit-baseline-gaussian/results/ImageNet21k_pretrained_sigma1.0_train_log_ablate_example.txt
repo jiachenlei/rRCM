@@ -1,4 +1,4 @@
-epoch	time	lr	train loss	train acc	testloss	test acc
+epoch	time	lr	train loss	train acc	test acc
 Namespace(dataset='imagenet', arch='pretrained-vit', outdir='output/pretrained_sigma1.0-run3', path=None, workers=4, epochs=150, batch=1024, lr=0.001, lr_step_size=30, gamma=0.05, use_mixup=False, data_aug=False, momentum=0.9, weight_decay=0.0001, noise_sd=1.0, norm_stats='0.5', gpu=None, print_freq=10)
 0	0:0	0.001	6.91	0.196	0.68
 1	0:0	0.001	6.9	0.617	0.895
