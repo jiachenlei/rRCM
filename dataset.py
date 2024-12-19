@@ -115,7 +115,6 @@ class ImageDataset(Dataset):
         name,
         resolution,
         image_paths,
-        classes=None,
         augmentation_type = "strong",
         value_range="-1,1" # the range of pixel value after normalization, by default is [-1,1]
     ):
@@ -123,7 +122,6 @@ class ImageDataset(Dataset):
         self.name = name
         self.resolution = resolution
         self.local_images = image_paths
-        self.local_classes = None
 
         if value_range == "0,1":
             mean = [0, 0, 0]
@@ -236,11 +234,7 @@ class ImageDataset(Dataset):
         cropped_pil= Image.fromarray(center_crop_arr(pil_image, self.resolution))
         x = self.simple_augmentation(cropped_pil)
 
-        out_dict = {}
-        if self.local_classes is not None:
-            out_dict["y"] = np.array(self.local_classes[idx], dtype=np.int64)
-
-        return x, x_aug, x_aug2, out_dict
+        return x, x_aug, x_aug2
 
 
 def load_data(
@@ -249,7 +243,6 @@ def load_data(
     data_dir,
     batch_size,
     image_size,
-    class_cond=False,
     deterministic=False,
     num_workers=8,
     **kwargs,
@@ -275,29 +268,14 @@ def load_data(
     if not data_dir:
         raise ValueError("unspecified data directory")
     all_files = _list_image_files_recursively(data_dir)
-    classes = None
-    if class_cond:
-        if name == "cifar10":
-            raw_content = open("labels.txt", "r").readlines()
-            labels = {}
-            for entry in raw_content:
-                filename, label = entry.split(",")
-                labels[filename] = int(label)
-            classes = [labels[path.split("/")[-1]] for path in all_files]
-        elif name == "imagenet": # otherwise imagenet
-            class_names = [bf.basename(path).split("_")[0] for path in all_files]
-            sorted_classes = {x: i for i, x in enumerate(sorted(set(class_names)))}
-            classes = [sorted_classes[x] for x in class_names]
     logging.info(f"total training samples: {len(all_files)}")
 
     dataset = ImageDataset(
         name,
         image_size,
         all_files,
-        classes=classes,
         **kwargs,
     )
-
     logging.info(f"batch size per process:{batch_size}")
     loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=(not deterministic), num_workers=num_workers, drop_last=True,

@@ -2,7 +2,6 @@
 import os
 import datetime
 import builtins
-import numpy as np
 from time import time
 
 # for logging
@@ -11,7 +10,6 @@ from absl import app
 from absl import logging
 
 import torch
-from torch import nn
 import accelerate
 
 from core import Smooth
@@ -65,7 +63,7 @@ def train(args):
     bs = 200 if args.dataset.name == "imagenet" else 500  # batch size used in certification, not data loading
 
     # logging
-    workdir = "/mnt/vepfs/home/rcm/certify_results_n10k/" if n == 10000 else "/mnt/vepfs/home/rcm/certify_results_n100k/"
+    workdir = "WORKDIR FOR SAVING CERTIFICATION RESULTS"
     os.makedirs(os.path.join(workdir, f"{args.name}"), exist_ok=True)
 
     # initialize accelerator

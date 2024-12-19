@@ -11,24 +11,7 @@ from rcm.rcm_denoiser import RepresentationKarrasDenoiser
 import abc
 from torch import nn
 import einops
-import copy
-
-
-def set_logger(log_level='info', fname=None):
-    import logging as _logging
-    handler = logging.get_absl_handler()
-    formatter = _logging.Formatter('%(asctime)s - %(filename)s - %(message)s')
-    handler.setFormatter(formatter)
-    logging.set_verbosity(log_level)
-    if fname is not None:
-        handler = _logging.FileHandler(fname)
-        handler.setFormatter(formatter)
-        logging.get_absl_logger().addHandler(handler)
-
-
-def dct2str(dct):
-    return str({k: f'{v:.6g}' for k, v in dct.items()})
-
+from absl import logging
 
 class MetricLogger(object):
 
@@ -93,42 +76,45 @@ def create_ema_and_scales_fn(
     **kwargs,
 ):
     def ema_and_scales_fn(step):
-        if target_ema_mode == "fixed" and scale_mode == "fixed":
-            target_ema = start_ema
-            scales = start_scales
-        elif target_ema_mode == "fixed" and scale_mode == "progressive":
-            target_ema = start_ema
-            scales = np.ceil(
-                np.sqrt(
-                    (step / total_steps) * ((end_scales + 1) ** 2 - start_scales**2)
-                    + start_scales**2
-                )
-                - 1
-            ).astype(np.int32)
-            scales = np.maximum(scales, 1)
-            scales = scales + 1
-
-        elif target_ema_mode == "adaptive" and scale_mode == "progressive":
-            scales = np.ceil(
-                np.sqrt(
-                    (step / total_steps) * ((end_scales + 1) ** 2 - start_scales**2)
-                    + start_scales**2
-                )
-                - 1
-            ).astype(np.int32)
-            scales = np.maximum(scales, 1)
-            c = -np.log(start_ema) * start_scales
-            target_ema = np.exp(-c / scales)
-            scales = scales + 1
-        elif target_ema_mode == "fixed" and scale_mode == "icm":
+        enable_gradclip = False
+        gradclip_method = kwargs.get("gradclip_method", "after_warmup")
+        def icm_scale(step):
             K = total_steps
             k = step
             K_prime = np.ceil(
                 K / np.log2(np.ceil(end_scales/start_scales) + 1)
             )
             scales = min(start_scales*(2**np.ceil(k/K_prime)), end_scales) + 1
+            return scales
+
+        if target_ema_mode == "fixed" and scale_mode == "fixed":
+            target_ema = start_ema
+            scales = start_scales
+        elif target_ema_mode == "fixed" and scale_mode == "icm":
+            scales = icm_scale(step)
+            if gradclip_method == "icm":
+                prev_scales = icm_scale(step-1) if step -1 > 0 else scales
+                if prev_scales != scales:
+                    enable_gradclip = True
             target_ema = start_ema
         elif target_ema_mode == "sigmoid" and scale_mode == "icm":
+            ema_decay_steps = kwargs.get("ema_decay_steps", total_steps)
+            A = target_ema_A
+            ema =  np.sqrt(
+                    (step / ema_decay_steps) * ( end_ema ** 2 - start_ema**2 )
+                    + start_ema**2
+                ) if step < ema_decay_steps else end_ema
+
+            c = 2/(1+np.exp(-A*((ema-start_ema)/(end_ema-start_ema)))) - 1
+
+            target_ema = c*end_ema + (1-c)*start_ema
+            scales = icm_scale(step)
+            if gradclip_method == "icm":
+                prev_scales = icm_scale(step-1) if step -1 > 0 else scales
+                if prev_scales != scales:
+                    enable_gradclip = True
+
+        elif target_ema_mode == "sigmoid" and scale_mode == "fixed":
             ema_decay_steps = kwargs.get("ema_decay_steps", total_steps)
 
             A = target_ema_A
@@ -140,48 +126,62 @@ def create_ema_and_scales_fn(
             c = 2/(1+np.exp(-A*((ema-start_ema)/(end_ema-start_ema)))) - 1
 
             target_ema = c*end_ema + (1-c)*start_ema
-
-            K = total_steps
-            k = step
-            K_prime = np.ceil(
-                K / np.log2(np.ceil(end_scales/start_scales) + 1)
-            )
-            scales = min(start_scales*(2**np.ceil(k/K_prime)), end_scales) + 1
-
+            scales = start_scales
+        elif target_ema_mode == "fixed" and scale_mode == "fixed":
+            target_ema = start_ema
+            scales = start_scales
         else:
             raise NotImplementedError
 
-        tau_mode = kwargs.get("tau_mode", "fixed")
-        end_tau = kwargs.get("end_tau", 0.01)
-        start_tau = kwargs.get("start_tau", 0.2)
-
-        if tau_mode == "fixed":
-            tau = start_tau
-        elif tau_mode == "step":
-            K = total_steps
-            k = step
-            K_prime = np.ceil(
-                K / np.log2(np.ceil(start_tau/end_tau) + 1)
-            )
-            tau = max(start_tau/(2**np.ceil(k/K_prime)), end_tau)
-
-        return float(target_ema), int(scales), tau
+        return float(target_ema), int(scales), enable_gradclip
 
     return ema_and_scales_fn
+
+
+def rcm_model_and_diffusion_defaults():
+    """
+    Defaults for image training.
+    """
+    res = dict(
+        image_size=32,
+        patch_size=4,
+        embed_dim=768, 
+        hidden_dim=4096, 
+        output_dim=256, 
+        depth=12, 
+        num_heads=12,
+        use_checkpoint=False,
+        p_uncond=0.0,
+
+        sigma_min=0.002,
+        sigma_max=80.0,
+        sigma_data = 0.5,
+
+        collect_across_process = True,
+        tau = 0.1,
+        rescale_t=True,
+    )
+    return res
+
+
+# reserved for debugging
+def rcm_train_defaults():
+    return dict(
+        target_ema_mode="fixed",
+        scale_mode="fixed",
+        total_training_steps=600000,
+        start_ema=0.0,
+        start_scales=20,
+        end_scales=80,
+    )
 
 
 def create_diffusion(**kwargs):
     diffusion = RepresentationKarrasDenoiser(**kwargs)
     return diffusion
 
-
-def create_model(model_type="vit", pretrain=True, **kwargs):
-    if model_type == "vit":
-        model_class = RCMViT
-        return model_class(**kwargs)
-    else:
-        raise NotImplementedError(f"Unknown model type:{model_type}")
-
+def create_model(**kwargs):
+    return RCMViT(**kwargs)
 
 def setup_for_distributed(is_master):
     """
@@ -234,9 +234,13 @@ class TrainState(object):
             if key in ['optimizer', 'lr_scheduler', 'nnet', 'nnet_ema', 'target_model'] and val is not None:
                 torch.save(val.state_dict(), os.path.join(path, f'{key}.pth'))
 
-    def load(self, path, set_step=-1):
+    def load(self, path, set_step=-1, remove_patch_embed=False):
         logging.info(f'load from {path}')
-        self.step = torch.load(os.path.join(path, 'step.pth'))
+        try:
+            self.step = torch.load(os.path.join(path, 'step.pth'))
+        except:
+            self.step = 0
+
         skip_opt_etc = False
         if set_step != -1:
             self.step = set_step
@@ -247,12 +251,19 @@ class TrainState(object):
             if key not in ['step', 'is_warmup'] and val is not None:
                 try:
                     if key in ["nnet", "nnet_ema", "target_model"]:
-                        missing, unexpected = val.load_state_dict(torch.load(os.path.join(path, f'{key}.pth'), map_location='cpu'), strict=False)
-                        if len(missing) is not None:
+                        state_dict = torch.load(os.path.join(path, f'{key}.pth'), map_location='cpu')
+                        # if remove_patch_embed:
+                        #     state_dict.pop("pos_embed")
+                        #     state_dict.pop("patch_embed.proj.weight")
+                        missing, unexpected = val.load_state_dict(state_dict, strict=False)
+                        if len(missing) != 0:
                             logging.info(f"Missing keys:{missing} when loading ckpt of {key}")
+                        elif len(unexpected) != 0:
+                            # this is expected when loading imagenet for training on cifar10
+                            logging.info(f"Unexpected keys:{missing} when loading ckpt of {key}")
                     elif not skip_opt_etc:
                         val.load_state_dict(torch.load(os.path.join(path, f'{key}.pth'), map_location='cpu'))
-                except Exception as ex:
+                except Exception as ex: # add try except to resume training from a legacy ckpt, trained using codes from consistency model
                     logging.info(f'error when loading ckpt {key}: {ex}, automatically skipping...')
 
     def resume(self, ckpt_root, step=None):
@@ -263,8 +274,11 @@ class TrainState(object):
             ckpts = list(filter(lambda x: '.ckpt' in x, os.listdir(ckpt_root)))
             if not ckpts:
                 return
-            steps = map(lambda x: int(x.split(".")[0]), ckpts)
-            step = max(steps)
+            if "latest.ckpt" in ckpts:
+                step = "latest"
+            else:
+                steps = map(lambda x: int(x.split(".")[0]), ckpts)
+                step = max(steps)
         ckpt_path = os.path.join(ckpt_root, f'{step}.ckpt')
         logging.info(f'resume from {ckpt_path}')
         self.load(ckpt_path)
@@ -298,6 +312,7 @@ def customized_lr_scheduler(optimizer, min_scale=-1, name="warmup-cosine", warmu
                 if step <= warmup_steps:
                     return min(step / warmup_steps, 1)
                 elif step <= total_training_steps:
+                    # return lr_min/lr_base + 0.5*(1-lr_min/lr_base)*(1+math.cos(step*math.pi/total_steps))
                     lr_scale = 0.5*(1+math.cos((step-warmup_steps)*math.pi/(total_training_steps-warmup_steps)))
                     if min_scale != -1:
                         lr_scale = max(lr_scale, min_scale)
@@ -329,8 +344,10 @@ def param_groups_lrd(model, lr=1e-4, weight_decay=0.05, no_weight_decay_list=[],
     layer_scales = list(layer_decay ** (num_layers - i) for i in range(num_layers + 1))
 
     for n, p in model.named_parameters():
+        # print(n)
         if not p.requires_grad or n in ignore:
             continue
+        # no decay: all 1D parameters and model specific ones
         if p.ndim == 1 or n in no_weight_decay_list:
             g_decay = "no_decay"
             this_decay = 0.
@@ -359,15 +376,19 @@ def param_groups_lrd(model, lr=1e-4, weight_decay=0.05, no_weight_decay_list=[],
         param_group_names[group_name]["params"].append(n)
         param_groups[group_name]["params"].append(p)
 
+    # print("parameter groups: \n%s" % json.dumps(param_group_names, indent=2))
+    # print(param_groups.keys())
     return list(param_groups.values())
 
 
-def get_layer_id_for_vit(name, num_layers):
+def get_layer_id_for_vit(name, num_layers, name2id={}):
     """
     Assign a parameter with its layer id
     Following BEiT: https://github.com/microsoft/unilm/blob/master/beit/optim_factory.py#L33
     """
-    if name in ['base_model.cls_token', 'base_model.pos_embed']:
+    if name in name2id:
+        return name2id[name]
+    elif name in ['base_model.cls_token', 'base_model.pos_embed']:
         return 0
     elif name.startswith('base_model.patch_embed'):
         return 0
@@ -411,7 +432,7 @@ def initialize_train_state(args, accelerator):
     target_model = create_model(**args.nnet).train()
 
     for param in target_model.parameters():
-        param.requires_grad_(False)
+        param.requires_grad_(False) # freeze the parameters of target model
 
     if accelerator.num_processes > 1:
         logging.info("Distributed training, use synchronized batch norm")
@@ -443,6 +464,7 @@ def log_loss_dict(diffusion, ts, losses):
     metrics = {}
     for key, values in losses.items():
         if key == "loss": continue
+        # Log the quantiles (four quartiles, in particular).
         for sub_t, sub_loss in zip(ts.cpu().numpy(), values.detach().cpu().numpy()):
             quartile = int(4 * sub_t / diffusion.num_timesteps)
             metrics[f"{key}_q{quartile}"] =  sub_loss
@@ -464,3 +486,20 @@ def _compute_norms(state_dict, grad_scale=1.0):
 
 def check_overflow(value):
     return (value == float("inf")) or (value == -float("inf")) or (value != value)
+
+
+def set_logger(log_level='info', fname=None):
+    import logging as _logging
+    handler = logging.get_absl_handler()
+    formatter = _logging.Formatter('%(asctime)s - %(filename)s - %(message)s')
+    handler.setFormatter(formatter)
+    logging.set_verbosity(log_level)
+    if fname is not None:
+        handler = _logging.FileHandler(fname)
+        handler.setFormatter(formatter)
+        logging.get_absl_logger().addHandler(handler)
+
+
+def dct2str(dct):
+    return str({k: f'{v:.6g}' for k, v in dct.items()})
+

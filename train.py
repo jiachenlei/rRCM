@@ -17,7 +17,6 @@ import torch
 import multiprocessing as mp
 from tqdm import tqdm
 from absl import logging
-import uvit_libs.utils as uvit_utils
 import rcm.utils as utils
 from dataset import load_data
 
@@ -28,7 +27,7 @@ import shutil
 def train(args):
 
     mp.set_start_method('spawn')
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False if args.train.training_mode != "wocontrastive" else True) # set as true on 27th Oct, when running the wocontrastive experiment
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False) # set as true on 27th Oct, when running the wocontrastive experiment
     amp_kwargs = GradScalerKwargs(init_scale=2**14, growth_factor=1.0006933874625807, growth_interval=1, backoff_factor=0.5)
     accelerator = accelerate.Accelerator(split_batches=True, mixed_precision="fp16", kwargs_handlers=[ddp_kwargs, amp_kwargs])
     device = accelerator.device
@@ -42,13 +41,13 @@ def train(args):
         os.makedirs(args.workdir, exist_ok=True)
         # wandb.init(dir=os.path.abspath(args.workdir), project=f'uvit_{args.dataset.name}', config=args.to_dict(),
         #            name=args.name, job_type='train', mode='offline')
-        uvit_utils.set_logger(log_level='info', fname=os.path.join(args.workdir, 'output.log'))
+        utils.set_logger(log_level='info', fname=os.path.join(args.workdir, 'output.log'))
         logfp = open(os.path.join(args.workdir, 'output.log'), "a+")
         print(args, file=logfp, flush=True)
         # logging.info(args)
     else:
         os.makedirs(args.workdir, exist_ok=True)
-        uvit_utils.set_logger(log_level='error', fname=os.path.join(args.workdir, 'error.log'))
+        utils.set_logger(log_level='error', fname=os.path.join(args.workdir, 'error.log'))
 
     logging.info(f'Process {accelerator.process_index} using device: {device} world size: {accelerator.num_processes}')
     utils.setup_for_distributed(accelerator.is_main_process)
@@ -62,14 +61,14 @@ def train(args):
         args.optimizer.lr = args.optimizer.lr * args.dataset.batch_size / 256
         logging.info(f"scale lr w.r.t batch size, current lr: {args.optimizer.lr}")
 
-    train_state, controller, target_controller = utils.initialize_train_state(args, accelerator)
+    train_state = utils.initialize_train_state(args, accelerator)
     train_state.resume(args.workdir)# resume from given path or current working directory
 
-    if os.path.isdir(args.path): # load pre-trained weights
-        logging.info(f"load pre-trained weight: {args.path}")
-        # rootpath = "/".join(args.path.split("/")[:-1])
-        # step = int(args.path.split("/")[-1].split(".")[0])
-        train_state.load(args.path, set_step=0, remove_patch_embed=False) 
+    # if os.path.isdir(args.path): # load pre-trained weights
+    #     logging.info(f"load pre-trained weight: {args.path}")
+    #     # rootpath = "/".join(args.path.split("/")[:-1])
+    #     # step = int(args.path.split("/")[-1].split(".")[0])
+    #     train_state.load(args.path, set_step=0, remove_patch_embed=False) 
 
     lr_scheduler = train_state.lr_scheduler
     model, _, target_model, optimizer, data_loader = accelerator.prepare(train_state.nnet, train_state.nnet_ema,
@@ -82,56 +81,39 @@ def train(args):
     data_generator = get_data_generator()
 
     ema_scale_fn = utils.create_ema_and_scales_fn(**args.ema_scale, gradclip=args.train.gradclip, gradclip_method=args.train.gradclip_method)
-    target_ema, num_scales, tau, _enable_gradclip = ema_scale_fn(train_state.step)
+    _, num_scales, _ = ema_scale_fn(train_state.step)
     diffusion = utils.create_diffusion(**args.diffusion, num_timesteps=num_scales, device=device)
     # logging.info(f"initial diffusion time steps:{num_scales}")
     # time step sampling schedule
 
-    def train_step(batch, gradclip_constant_flag):
+    def train_step(batch):
 
-        target_ema, num_scales, tau, _enable_gradclip = ema_scale_fn(train_state.step)
+        target_ema, num_scales, _enable_gradclip = ema_scale_fn(train_state.step)
 
         diffusion.set_scale(num_scales)
         x_start, x_aug, x_aug2 = batch
         bs = x_start.shape[0]
         indices = diffusion.sample_schedule(bs)
 
-        if args.diffusion.schedule_sampler == "singular_t" and accelerator.num_processes > 1:
+        if accelerator.num_processes > 1:
             torch.distributed.broadcast(indices, 0) # use exactly the same t across all processes
 
         optimizer.zero_grad()
+        compute_losses = functools.partial(
+            # run rRCM pre-training
+            diffusion.rRCMloss,
+            model,
+            x_start,
+            num_scales,
+            indices=indices,
+            target_model=target_model,
+            x_aug = x_aug,
+            x_aug2 = x_aug2,
+            accelerator=accelerator,
+            step=train_state.step,
+            tau=args.tau,
+        )
 
-        if args.train.training_mode == "rcm":
-
-            compute_losses = functools.partial(
-                # run rRCM pre-training
-                diffusion.consistency_losses,
-                model,
-                x_start,
-                num_scales,
-                indices=indices,
-                target_model=target_model,
-                x_aug = x_aug,
-                x_aug2 = x_aug2,
-                accelerator=accelerator,
-                step=train_state.step,
-                controller = controller,
-                target_controller = target_controller,
-                tau2=tau,
-            )
-
-        elif args.train.training_mode == "noise_aug_ct":
-            compute_losses = functools.partial(
-                diffusion.noiseaug_contrastive_losss,
-                model,
-                x_start,
-                num_scales,
-                indices=indices,
-                target_model=target_model,
-                x_aug = x_aug,
-                x_aug2 = x_aug2,
-                accelerator=accelerator
-            )
         # accelerator.wait_for_everyone()
         with accelerator.autocast():
             losses = compute_losses()
@@ -139,14 +121,10 @@ def train(args):
 
         accelerator.backward(loss)
 
-        gradclip_constant_flag = gradclip_constant_flag or (args.train.gradclip_method == "after_warmup" and not train_state.is_warmup)
+        gradclip_constant_flag = (args.train.gradclip_method == "after_warmup" and not train_state.is_warmup)
         if accelerator.sync_gradients and gradclip_constant_flag and args.train.gradclip > 0:
             accelerator.clip_grad_norm_(model.parameters(), args.train.gradclip)
 
-        # if accelerator.sync_gradients:
-            # accelerator.clip_grad_norm_(model.parameters(), max_grad_norm)
-        # grad_norm, param_norm = utils._compute_norms(accelerator.unwrap_model(model).named_parameters())
-        # if utils.check_overflow(grad_norm):
         optimizer.step()
         if accelerator.optimizer_step_was_skipped:
             # inf encoutered in mixed_precision training, skip the update of all train state
@@ -156,19 +134,7 @@ def train(args):
         lr_scheduler.step()
 
         train_state.ema_update(args.train.ema_rate)
-
-        if args.train.training_mode == "wocontrastive":
-            idx = indices[0]
-            rho = 7
-            t = diffusion.sigma_max ** (1 / rho) + idx / (num_scales - 1) * (
-                    diffusion.sigma_min ** (1 / rho) - diffusion.sigma_max ** (1 / rho)
-                )
-            t = t**rho
-            if t <= 0.2:
-                train_state.target_update(target_ema)
-        else:
-            train_state.target_update(target_ema)
-
+        train_state.target_update(target_ema)
         train_state.step += 1
 
         grad_norm, param_norm = utils._compute_norms(accelerator.unwrap_model(model).named_parameters())
@@ -179,7 +145,7 @@ def train(args):
             "grad_norm": grad_norm,
             "param_norm": param_norm,
             "target_ema": target_ema,
-            "tau2": tau,
+            "tau2": args.tau,
             "grad_clip": _enable_gradclip,
         })
 
@@ -187,16 +153,12 @@ def train(args):
 
     metric_logger = utils.MetricLogger()
     logging.info("training...") 
-    enable_gradclip = False
+
     while (
         train_state.step < args.train.total_training_steps
     ):  # keep training until interrupted.
-        *batch, cond = next(data_generator)
-
-        metrics = train_step(batch, enable_gradclip)
-
-        if metrics is not None and metrics["grad_clip"]:
-            enable_gradclip = True
+        batch = next(data_generator)
+        metrics = train_step(batch)
 
         if train_state.step == args.lr_scheduler.warmup_steps:
             # warmup end
@@ -224,7 +186,7 @@ def train(args):
             torch.cuda.empty_cache()
 
         if train_state.step % args.train.log_interval == 0 and accelerator.is_main_process:
-            print(uvit_utils.dct2str(dict(step=train_state.step,lr=train_state.optimizer.param_groups[0]['lr'], **metric_logger.get())), file=logfp, flush=True)
+            print(utils.dct2str(dict(step=train_state.step,lr=train_state.optimizer.param_groups[0]['lr'], **metric_logger.get())), file=logfp, flush=True)
             # logging.info(uvit_utils.dct2str(dict(step=train_state.step,lr=train_state.optimizer.param_groups[0]['lr'], **metric_logger.get())))
             metric_logger.clean()
 

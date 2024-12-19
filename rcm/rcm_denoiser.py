@@ -1,15 +1,7 @@
-import os
-from absl import logging
-
-import math
 import torch
-from torch import nn
 import torch.nn.functional as F
 from rcm.resample import create_named_schedule_sampler
-from multiprocessing import Queue
 
-import scipy
-import einops
 
 def append_dims(x, target_dims):
     """Appends dimensions to the end of a tensor until it has target_dims dimensions."""
@@ -30,20 +22,10 @@ class RepresentationKarrasDenoiser:
         rho=7.0,
         rescale_t=True, # rescale time condition or not
 
-        tau1 = 1.0, 
-        tau2 = 1.0, 
+        tau = 1.0, 
         collect_across_process = True, # whether collect negative samples across process
-
-        schedule_sampler = "uniform",
         num_timesteps = 20,
-
-        sample_param = {
-            "p_mean": .0,
-            "p_std": 2.0,
-        },
-
         device = "cuda",
-        apply_weight = False,
         consistency_target_0ema = False,
 
         **kwargs,
@@ -54,18 +36,15 @@ class RepresentationKarrasDenoiser:
         self.rho = rho
         self.rescale_t = rescale_t
 
-        self.tau1 = tau1
-        self.tau2 = tau2
+        self.tau = tau
 
         self.collect_across_process = collect_across_process
-        self.sample_param = sample_param
 
-        self.schedule_sampler = create_named_schedule_sampler(schedule_sampler, **sample_param)
+        self.schedule_sampler = create_named_schedule_sampler() # unique time step sampler
         self.num_timesteps = num_timesteps
         self.previous_timesteps = num_timesteps
         self.device = device
 
-        self.apply_weight = apply_weight
         self.consistency_target_0ema = consistency_target_0ema
 
         self.sigmas = torch.tensor([(self.sigma_max ** (1 / self.rho) + idx / (self.num_timesteps - 1) * (self.sigma_min ** (1 / self.rho) - self.sigma_max ** (1 / self.rho))
@@ -107,9 +86,9 @@ class RepresentationKarrasDenoiser:
         return c_skip, c_out, c_in
 
     def denoise(self, model, x_t, sigmas, indices, dropout=False, **model_kwargs):
-        c_skip, c_out, c_in = self.get_scalings_for_boundary_condition(sigmas)
+        _, _, c_in = self.get_scalings_for_boundary_condition(sigmas)
         rescaled_t = 1000 * 0.25 * torch.log(sigmas + 1e-44) if self.rescale_t else sigmas
-        ret = model(append_dims(c_in, x_t.ndim) * x_t, rescaled_t, indices=indices, dropout=dropout, **model_kwargs)
+        ret = model(append_dims(c_in, x_t.ndim) * x_t, rescaled_t, **model_kwargs)
         return ret
 
     def rcm_tune_denoise(self, model, x_t, sigmas, indices, **model_kwargs):
@@ -155,22 +134,22 @@ class RepresentationKarrasDenoiser:
         x_aug = None,
         x_aug2 = None,
         accelerator = None,
-        tau2 = 0.2,
     ):
         if model_kwargs is None:
             model_kwargs = {}
+
         if noise is None:
             noise = torch.randn_like(x_start)
 
         assert target_model is not None, "Must have a target model"
         dims = x_start.ndim
 
-        def denoise_fn(x, t, indices, dropout=False):
-            return self.denoise(model, x, t, indices, dropout=dropout, **model_kwargs)
+        def denoise_fn(x, t):
+            return self.denoise(model, x, t, **model_kwargs)
 
         @torch.no_grad()
-        def target_denoise_fn(x, t, indices, dropout=False):
-            return self.denoise(target_model, x, t, indices, dropout=dropout, **model_kwargs)
+        def target_denoise_fn(x, t):
+            return self.denoise(target_model, x, t, **model_kwargs)
 
         t = self.sigma_max ** (1 / self.rho) + indices / (num_scales - 1) * (
             self.sigma_min ** (1 / self.rho) - self.sigma_max ** (1 / self.rho)
@@ -192,11 +171,11 @@ class RepresentationKarrasDenoiser:
         x_t0 = x_aug + noise*append_dims(t0, dims)
         x_t0_target = x_aug2 + noise*append_dims(t0, dims)
 
-        h = denoise_fn(x_t0, t0, None, dropout=False)
-        h_target = target_denoise_fn(x_t0_target, t0, None, dropout=False)
+        h = denoise_fn(x_t0, t0)
+        h_target = target_denoise_fn(x_t0_target, t0)
         h = h[0]
         h_target = h_target[0].detach()
-        tau = self.tau1
+        tau = self.tau
 
         xt_contrast = self.contrastive_loss(h, h_target, 
                                             tau=tau,
@@ -207,12 +186,10 @@ class RepresentationKarrasDenoiser:
         # compute consistency loss
         x_t = x_start + noise*append_dims(t, dims)
         x_t2 = x_start + noise*append_dims(t2, dims)
-        dropout_state = torch.get_rng_state()
-        h = denoise_fn(x_t, t, None)
-        torch.set_rng_state(dropout_state)
-        h_target = denoise_fn(x_t2, t2, None).detach()
+        h = denoise_fn(x_t, t)
+        h_target = denoise_fn(x_t2, t2).detach()
         xt_consistency = self.contrastive_loss(h[1], h_target[1], 
-                                                tau=tau2,
+                                                tau=tau,
                                                 collect_across_process=self.collect_across_process,
                                                 accelerator=accelerator,
                                                 )
@@ -221,77 +198,5 @@ class RepresentationKarrasDenoiser:
         terms["loss"] = xt_contrast + xt_consistency 
         terms["xt_metric1"] = xt_contrast.detach().clone()
         terms["xt_metric2"] = xt_consistency.detach().clone()
-
-        return terms
-
-    def noiseaug_contrastive_losss(
-        self,
-        model,
-        x_start,
-        num_scales,
-        indices=None,
-        model_kwargs=None,
-        target_model=None,
-        noise=None,
-        x_aug = None,
-        x_aug2 = None,
-        accelerator = None
-    ):
-        if model_kwargs is None:
-            model_kwargs = {}
-        if noise is None:
-            noise = torch.randn_like(x_start)
-
-        assert target_model is not None, "Must have a target model"
-        dims = x_start.ndim
-
-        def denoise_fn(x, t, indices):
-            return self.denoise(model, x, t, indices, **model_kwargs)
-
-        @torch.no_grad()
-        def target_denoise_fn(x, t, indices):
-            return self.denoise(target_model, x, t, indices,  **model_kwargs)
-
-        indices0 = torch.full((x_start.shape[0],), self.num_timesteps-1, device=x_start.device)
-        t0 = self.sigma_max ** (1 / self.rho) + indices0 / (num_scales - 1) * (
-            self.sigma_min ** (1 / self.rho) - self.sigma_max ** (1 / self.rho)
-        )
-        t0 = t0**self.rho
-
-        device = x_start.device
-
-        # sigmas for normalized data: (x-mean)/std
-        sigma = torch.tensor([0.002, 0.5, 1.0, 2.0], device=device).unsqueeze(0).expand(x_start.shape[0], -1)
-
-        rand_seed = torch.randn((x_start.shape[0], 4), device=device).argmax(dim=1, keepdim=True)
-        sigma = torch.gather(sigma, dim=1, index=rand_seed).squeeze(1)
-
-        x_t0 = x_aug + noise*append_dims(sigma, dims)
-        x_t0_target = x_aug2 + noise*append_dims(sigma, dims)
-
-        # dropout_state = torch.get_rng_state()
-        h = denoise_fn(x_t0, t0, None)[0]
-        # torch.set_rng_state(dropout_state)
-        h_target = target_denoise_fn(x_t0_target, t0, None)[0].detach()
-        tau = self.tau1
-
-        # torch.autograd.set_detect_anomaly(True)
-        xt_contrast = self.contrastive_loss(h, h_target, 
-                                            tau=tau,
-                                            collect_across_process=self.collect_across_process,
-                                            accelerator=accelerator,
-                                            )
-
-        h = denoise_fn(x_t0_target, t0, None)[0]
-        h_target = target_denoise_fn(x_t0, t0, None)[0].detach()
-        xt_contrast += self.contrastive_loss(h, h_target, 
-                                                tau=tau,
-                                                collect_across_process=self.collect_across_process,
-                                                accelerator=accelerator,
-                                                )
-
-        terms = {}
-        terms["loss"] = xt_contrast
-        terms["xt_metric1"] = xt_contrast.detach().clone()
 
         return terms

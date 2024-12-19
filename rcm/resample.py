@@ -7,16 +7,13 @@ import torch
 import torch.distributed as dist
 
 
-def create_named_schedule_sampler(name, **kwargs):
+def create_named_schedule_sampler(**kwargs):
     """
     Create a ScheduleSampler from a library of pre-defined samplers.
 
     :param name: the name of the sampler.
     """
-    if name == "singular_t":
-        return UniformSingularStepSampler(**kwargs)
-    else:
-        raise NotImplementedError(f"unknown schedule sampler: {name}")
+    return UniformSingularStepSampler(**kwargs)
 
 
 class ScheduleSampler(ABC):

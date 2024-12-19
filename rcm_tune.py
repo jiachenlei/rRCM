@@ -29,8 +29,6 @@ import accelerate
 from absl import logging
 import rcm.utils as utils
 
-from attacks import Attacker, PGD_L2
-
 
 def timestep_embedding(timesteps, dim, max_period=10000):
     """
@@ -53,9 +51,9 @@ def timestep_embedding(timesteps, dim, max_period=10000):
     return embedding
 
 
-def reload_forward(self, layernorm, model_type="vit"):
+def reload_forward(self, layernorm):
 
-    def forward(x, timesteps, indices, **kwargs):
+    def forward(x, timesteps, **kwargs):
         x = self.patch_embed(x)
         B, L, D = x.shape
 
@@ -73,11 +71,8 @@ def reload_forward(self, layernorm, model_type="vit"):
             x = blk(x)
         x = x[:, 0]
 
-        if layernorm: # by default, layernorm == False
-            if self.final_norm == "multibn":
-                x = self.bn_layers[indices[0]](x)
-            else:
-                x = self.norm(x)
+        if layernorm:
+            x = self.norm(x)
 
         return x
 
@@ -283,7 +278,6 @@ class FinetuneModel(nn.Module):
         self.sigmas = self.sigmas**self.rho
 
     def get_sigma(self, n):
-
         sigma = self.sigma_max ** (1 / self.rho) + n / (self.num_scales - 1) * (
                 self.sigma_min ** (1 / self.rho) - self.sigma_max ** (1 / self.rho)
             )
@@ -295,7 +289,7 @@ class FinetuneModel(nn.Module):
         idx = (t[:, None].expand(-1, self.num_scales) - self.sigmas[None, :].expand(t.shape[0], -1)).abs().argmin(dim=1)
         return idx
 
-    def forward(self, x, noise_aug=0.0, noise=None, sigma_for_idx=0.0):
+    def forward(self, x, noise_aug=0.0, noise=None):
 
         # Augment with Gaussian noise during training
         if noise_aug != 0:
@@ -308,8 +302,6 @@ class FinetuneModel(nn.Module):
         else:
             idx = torch.full((x.shape[0], ), self.num_scales-1, device=x.device)
 
-        if sigma_for_idx != 0:
-            idx = self.find_nearest(torch.full((x.shape[0], ), sigma_for_idx, device=x.device))
 
         if self.task == "linear":
             with torch.no_grad():
@@ -571,7 +563,7 @@ def train(args):
         builtins.print = lambda *args: None
 
     model, diffusion = utils.create_model(**args.nnet), utils.create_diffusion(**args.diffusion)
-    model.forward = reload_forward(model, layernorm=args.train.layernorm, model_type=getattr(args.nnet, "model_type", "vit"))
+    model.forward = reload_forward(model, layernorm=args.train.layernorm)
 
     state_dict = None
     if args.path:
@@ -591,13 +583,12 @@ def train(args):
     ema_scale_fn = utils.create_ema_and_scales_fn(
         **args.ema_scale
     )
-    ema, num_scales, _ = ema_scale_fn(steps)
+    _, num_scales, _ = ema_scale_fn(steps)
     logging.info(f"Total discretization steps: {num_scales}")
 
     class_num = 10 if args.dataset.name == "cifar10" else 1000
     ftmodel = FinetuneModel(model, diffusion, class_num,
                                 task=args.task,
-                                # noise_aug=args.noise_aug,
                                 num_scales = num_scales,
                                 sigma_max = args.diffusion.sigma_max,
                                 sigma_min = args.diffusion.sigma_min,
@@ -677,7 +668,7 @@ def train(args):
     else:
         pbar = None
 
-    best_acc = [-1, -1, -1, -1, -1] # store best performing ckpt separately for each noise level, including [0, avg, 0.25, 0.5, 1.0]
+    best_acc = [-1, -1, -1, -1, -1]
     for epoch in range(epochs):
         if args.task == "linear" or args.task == "finetune":
             train_logging_dict = train_one_epoch(accelerator, ftmodel, train_data, optimizer, loss_fn, mixup_fn)

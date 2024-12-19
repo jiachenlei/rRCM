@@ -211,24 +211,16 @@ class RCMViT(nn.Module):
             mlp_ratio=4., qkv_bias=False, qk_scale=None,
             norm_layer=LayerNorm,
             mlp_time_embed=False,
-            num_classes=-1,
             use_checkpoint=False,
             p_uncond=0.0,
 
-            max_scale = 80,
-            use_bn = True,
-            last_bn = False,
-            projection_layers = 3,
-
             stop_grad_conv1 = False,
-
             moco_initialization = False,
             drop=0., attn_drop=0., drop_path=0.,
             **kwargs, # left for training rcm-uvit model
         ):
         super().__init__()
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
-        self.num_classes = num_classes
         self.in_chans = in_channels
         self.dtype= torch.float32 # by default use float32
         self.patch_size = patch_size
@@ -241,18 +233,11 @@ class RCMViT(nn.Module):
         self.patch_dim = patch_size ** 2 * in_channels
         self.kwargs = kwargs # left for training rcm-uvit model
 
-        self.max_scale = max_scale+1
         self.time_embed = nn.Sequential(
             nn.Linear(embed_dim, 4 * embed_dim),
             nn.SiLU(),
             nn.Linear(4 * embed_dim, embed_dim),
         ) if mlp_time_embed else nn.Identity()
-
-        if self.num_classes > 0:
-            self.label_emb = LabelEmbedder(self.num_classes, embed_dim, dropout_prob=p_uncond)
-            self.extras = 3
-        else:
-            self.extras = 2
 
         self.blocks = nn.ModuleList([
             Block(
@@ -260,21 +245,18 @@ class RCMViT(nn.Module):
                 norm_layer=norm_layer, use_checkpoint=use_checkpoint, drop=drop, attn_drop=attn_drop, drop_path=drop_path)
             for _ in range(depth)])
 
-
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         nn.init.normal_(self.cls_token, std=1e-6)
 
         self.norm = norm_layer(embed_dim)
-
-
         self.moco_initialization = moco_initialization
         if self.moco_initialization:
             self.moco_init_weights()
-        
-        self.projection_head = self._build_mlp(projection_layers, embed_dim, hidden_dim, output_dim, last_bn=last_bn,   use_bn=use_bn)
+
+        self.projection_head = self._build_mlp(3, embed_dim, hidden_dim, output_dim)
 
         self.apply(self._init_layernorm)
-        self.pos_embed = nn.Parameter(torch.zeros(1, self.extras + num_patches, embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, 2 + num_patches, embed_dim))
         trunc_normal_(self.pos_embed, std=.02)
 
         n_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -323,8 +305,6 @@ class RCMViT(nn.Module):
                 # follow SimCLR's design: https://github.com/google-research/simclr/blob/master/model_util.py#L157
                 # for simplicity, we further removed gamma in BN
                 mlp.append(nn.BatchNorm1d(dim2, affine=False))
-
-
         return nn.Sequential(*mlp)
 
     def unpatchify(self, x):
@@ -333,35 +313,25 @@ class RCMViT(nn.Module):
         x = einops.rearrange(x, "b (m n) (p1 p2 c) -> b c (m p1) (n p2)", m=num_patch,n=num_patch,p1=self.patch_size,p2=self.patch_size,c=self.in_chans)
         return x
 
-    def freeze_dropout(self, m):
-        if isinstance(m, nn.Dropout):
-            m.eval()
-
-    def forward(self, x, timesteps, indices=None, dropout=False):
+    def forward(self, x, timesteps):
         x = self.patch_embed(x)
         B, L, D = x.shape
 
         time_token = self.time_embed(timestep_embedding(timesteps, self.embed_dim))
         time_token = time_token.unsqueeze(dim=1)
         x = torch.cat((time_token, x), dim=1)
-        if self.multiclstoken:
-            cls_tokens = self.cls_token[indices[0]].expand(B, -1, -1).to(self.dtype)
-        else:
-            cls_tokens = self.cls_token.expand(B, -1, -1).to(self.dtype)
+        cls_tokens = self.cls_token.expand(B, -1, -1).to(self.dtype)
 
         x = torch.cat((cls_tokens, x), dim=1)
 
         x = x + self.pos_embed
         x = x.to(self.dtype)
 
-        if not dropout:
-            self.apply(self.freeze_dropout)
-
         for blk in self.blocks:
             x = blk(x)
 
         x = self.norm(x[:, 0])
-        residual = x
-        cls_token = self.projection_head(x)
+        cls_token = x
+        proj_cls_token = self.projection_head(x)
 
-        return cls_token, residual
+        return proj_cls_token, cls_token
