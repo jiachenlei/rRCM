@@ -21,8 +21,8 @@ pip install -r requirements.txt
 
 
 ## Data Pre-processing
-- the ImageNet dataset should be downloaded and organized as follows:
-PATH TO FOLDER:
+- the ImageNet dataset should be downloaded and organized as follows:  
+imagenet directory  
     - train/
         - n01440764
             - *.JPEG
