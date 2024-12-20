@@ -1,6 +1,9 @@
-# Official Implementatation: "Robust Representation Consistent Model via Contrastive Denoising"
+# Official Implementatation: "Robust Representation Consistency Model via Contrastive Denoising"
 
-### Authors: Jiachen Lei, Julius Berner, Jiongxiao Wang, Zhongzhu Chen, Zhongjie Ba, Kui Ren, Jun Zhu, Anima Anandkumar [Arxiv Link]() 
+**Authors:** Jiachen Lei, Julius Berner, Jiongxiao Wang, Zhongzhu Chen, Zhongjie Ba, Kui Ren, Jun Zhu, Anima Anandkumar 
+
+[Arxiv Link]() 
+
 > **Abstract** 
 
 
@@ -30,7 +33,7 @@ PATH TO FOLDER:
         - ...
 - the CIFAR10 dataset should be downloaded and organized following the official way provided by pytorch. (We read CIFAR10 images using torchvision)
 
-## Training
+## Pre-Training
 ### ImageNet
 ```python
 # RCM-B: train on 4 8xGPU machines
