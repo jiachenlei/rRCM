@@ -214,10 +214,3 @@ python certify.py --config=configs/cifar10_finetune.py --n=100000 --step=300000 
 
 ## Citation
 > 
-
-## Acknowledgement
-We thank the authors of the following repository for open-sourcing their codes:
-- [MoCo-v3](https://github.com/facebookresearch/moco-v3)
-- [Vision Transformer by Lucidrains](https://github.com/lucidrains/vit-pytorch)
-- [Consistency Model](https://github.com/openai/consistency_models)
-- [Consistency Regularization](https://github.com/jh-jeong/smoothing-consistency)
