@@ -245,7 +245,7 @@ class RCMViT(nn.Module):
                 norm_layer=norm_layer, use_checkpoint=use_checkpoint, drop=drop, attn_drop=attn_drop, drop_path=drop_path)
             for _ in range(depth)])
 
-        self.cls_token = nn.Parameter(torch.zeros(1, 32, embed_dim))
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         nn.init.normal_(self.cls_token, std=1e-6)
 
         self.norm = norm_layer(embed_dim)
@@ -256,7 +256,7 @@ class RCMViT(nn.Module):
         self.projection_head = self._build_mlp(3, embed_dim, hidden_dim, output_dim)
 
         self.apply(self._init_layernorm)
-        self.pos_embed = nn.Parameter(torch.zeros(1, 2 + 31 + num_patches, embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, 2 + num_patches, embed_dim))
         trunc_normal_(self.pos_embed, std=.02)
 
         n_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
