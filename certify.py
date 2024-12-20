@@ -13,8 +13,8 @@ import torch
 import accelerate
 
 from core import Smooth
-import rcm.utils as utils
-from rcm_tune import reload_forward, load_data, FinetuneModel
+import rrcm.utils as utils
+from rrcm_tune import reload_forward, load_data, FinetuneModel
 
 
 class BaseModel(FinetuneModel):
