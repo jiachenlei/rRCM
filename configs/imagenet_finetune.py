@@ -49,7 +49,7 @@ def get_config():
         target_ema_mode="sigmoid",
         target_ema_A=10,
         start_ema=0.99,
-        end_ema = 0.99,
+        end_ema = 0.9999,
         # scale
         scale_mode="icm",
         start_scales=20,
@@ -90,11 +90,10 @@ def get_config():
         drop_path=0.,
     )
 
-
     config.dataset = d(
         name="imagenet",
         image_size=_image_size,
-        data_dir='PATH TO TRAIN/',
+        data_dir='path to folder that contains train/ and val/',
         batch_size = 1024,
         value_range = "0.5,0.5",
 

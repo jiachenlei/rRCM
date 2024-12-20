@@ -110,8 +110,7 @@ def train(args):
             x_aug = x_aug,
             x_aug2 = x_aug2,
             accelerator=accelerator,
-            step=train_state.step,
-            tau=args.tau,
+            # tau=args.diffusion.tau,
         )
 
         # accelerator.wait_for_everyone()
@@ -145,7 +144,6 @@ def train(args):
             "grad_norm": grad_norm,
             "param_norm": param_norm,
             "target_ema": target_ema,
-            "tau2": args.tau,
             "grad_clip": _enable_gradclip,
         })
 

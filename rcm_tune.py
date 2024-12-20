@@ -461,7 +461,6 @@ def train_one_epoch_consistency(accelerator:accelerate.Accelerator, ftmodel, tra
         y_repeated = torch.cat([y for i in range(m)], dim=0)
 
         logits = ftmodel(img_repeated, noise_aug=noise_aug, noise=None)
-        print(logits.shape)
         clsloss = loss_fn(logits, y_repeated)
         closs = consistency_loss(logits.chunk(m),  lbd=lbd, eta=eta)
 
@@ -541,6 +540,8 @@ def train(args):
         try:
             utils.set_logger(log_level='info', fname=os.path.join(workdir, f'{logname}.log'))
         except PermissionError as ex:
+            os.makedirs("./temp", exist_ok=True)
+            print("Permission error occurred, save ckpt to ./temp")
             utils.set_logger(log_level='info', fname=os.path.join("./temp", f'{logname}.log'))
 
         logging.info(f"working dir: {workdir}, logging to {logname}.log")
@@ -549,7 +550,7 @@ def train(args):
         dest =  workdir
         def save_ckpt(test_acc, best_acc, prefix="", save=True):
             if test_acc > best_acc:
-                if  save:
+                if save:
                     torch.save(
                         ftmodel.state_dict(),
                         os.path.join(dest, prefix+args.name)

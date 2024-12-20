@@ -63,7 +63,7 @@ def train(args):
     bs = 200 if args.dataset.name == "imagenet" else 500  # batch size used in certification, not data loading
 
     # logging
-    workdir = "WORKDIR FOR SAVING CERTIFICATION RESULTS"
+    workdir = "./workdir"
     os.makedirs(os.path.join(workdir, f"{args.name}"), exist_ok=True)
 
     # initialize accelerator

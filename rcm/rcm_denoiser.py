@@ -85,7 +85,7 @@ class RepresentationKarrasDenoiser:
         c_in = 1 / (sigma**2 + self.sigma_data**2) ** 0.5
         return c_skip, c_out, c_in
 
-    def denoise(self, model, x_t, sigmas, indices, dropout=False, **model_kwargs):
+    def denoise(self, model, x_t, sigmas, **model_kwargs):
         _, _, c_in = self.get_scalings_for_boundary_condition(sigmas)
         rescaled_t = 1000 * 0.25 * torch.log(sigmas + 1e-44) if self.rescale_t else sigmas
         ret = model(append_dims(c_in, x_t.ndim) * x_t, rescaled_t, **model_kwargs)
@@ -186,9 +186,9 @@ class RepresentationKarrasDenoiser:
         # compute consistency loss
         x_t = x_start + noise*append_dims(t, dims)
         x_t2 = x_start + noise*append_dims(t2, dims)
-        h = denoise_fn(x_t, t)
-        h_target = denoise_fn(x_t2, t2).detach()
-        xt_consistency = self.contrastive_loss(h[1], h_target[1], 
+        h = denoise_fn(x_t, t)[1]
+        h_target = denoise_fn(x_t2, t2)[1].detach()
+        xt_consistency = self.contrastive_loss(h, h_target, 
                                                 tau=tau,
                                                 collect_across_process=self.collect_across_process,
                                                 accelerator=accelerator,
