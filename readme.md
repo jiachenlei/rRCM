@@ -23,6 +23,8 @@
 </p>
 
 
+### :fire: TODO
+- [ ] Upload Pre-trained Weights
 
 ### Requirements
 ```
@@ -224,4 +226,13 @@ python certify.py --config=configs/cifar10_finetune.py --n=100000 --step=300000 
 
 ## Citation
 ```bibtex
+@misc{lei2025robustrepresentationconsistencymodel,
+      title={Robust Representation Consistency Model via Contrastive Denoising}, 
+      author={Jiachen Lei and Julius Berner and Jiongxiao Wang and Zhongzhu Chen and Zhongjia Ba and Kui Ren and Jun Zhu and Anima Anandkumar},
+      year={2025},
+      eprint={2501.13094},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2501.13094}, 
+}
 ```
