@@ -167,7 +167,7 @@ class RepresentationKarrasDenoiser:
         )
         t0 = t0**self.rho
 
-        # compute contrastive loss
+        # compute symmetric contrastive loss
         x_t0 = x_aug + noise*append_dims(t0, dims)
         x_t0_target = x_aug2 + noise*append_dims(t0, dims)
 
@@ -176,8 +176,17 @@ class RepresentationKarrasDenoiser:
         h = h[0]
         h_target = h_target[0].detach()
         tau = self.tau
-
         xt_contrast = self.contrastive_loss(h, h_target, 
+                                            tau=tau,
+                                            collect_across_process=True,
+                                            accelerator=accelerator,
+                                            )
+        h = denoise_fn(x_t0_target, t0)
+        h_target = target_denoise_fn(x_t0, t0)
+        h = h[0]
+        h_target = h_target[0].detach()
+        tau = self.tau
+        xt_contrast += self.contrastive_loss(h, h_target, 
                                             tau=tau,
                                             collect_across_process=True,
                                             accelerator=accelerator,
