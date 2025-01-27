@@ -1,7 +1,7 @@
 <h1 align="center">Robust Representation Consistency Model via Contrastive Denoising</h1>
 <div align="center">
 
-[![arXiv](https://img.shields.io/badge/arXiv%20paper-2410.06940-b31b1b.svg)]()&nbsp;
+[![arXiv](https://img.shields.io/badge/arXiv%20paper-2501.13094-b31b1b.svg)](https://arxiv.org/abs/2501.13094)&nbsp;
 
   <a href="https://jiachenlei.github.io/" target="_blank">Jiachen&nbsp;Lei</a><sup>1,5</sup> &ensp; <b>&middot;</b> &ensp;
   <a href="https://jberner.info" target="_blank">Julius Berner</a><sup>2</sup> &ensp; <b>&middot;</b> &ensp;
