@@ -23,9 +23,6 @@
 </p>
 
 
-### :fire: TODO
-- [ ] Upload Pre-trained Weights
-
 ### Requirements
 ```
 pip install -r requirements.txt
